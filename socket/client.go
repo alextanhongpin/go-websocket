@@ -1,16 +1,17 @@
 package socket
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pkg/errors"
 )
 
 type Client struct {
-	hub       *Hub
-	socketID  SocketID
+	connID    ConnID
 	userID    UserID
 	conn      *websocket.Conn
 	send      chan Message
@@ -19,77 +20,51 @@ type Client struct {
 	// allowed []UserID
 }
 
-func NewClient(id string, hub *Hub, conn *websocket.Conn) *Client {
+func (c *Client) SendMessage(msg Message) bool {
+	select {
+	case c.send <- msg:
+		return true
+	case <-time.After(5 * time.Second):
+		return false
+	}
+}
+
+func NewClient(id string, conn *websocket.Conn) *Client {
 	return &Client{
 		userID:    UserID(id),
-		hub:       hub,
 		conn:      conn,
-		socketID:  NewSocketID(),
+		connID:    NewConnID(),
 		send:      make(chan Message),
 		createdAt: time.Now(),
 	}
 }
 
-func (c *Client) readPump() {
-	defer func() {
-		c.hub.unregister <- c
-		c.conn.Close()
-		log.Println("read pump closed")
-	}()
-	c.conn.SetReadLimit(maxMessageSize)
-	c.conn.SetReadDeadline(time.Now().Add(pongWait))
-	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
-	})
-	for {
-		var msg Message
-		if err := c.conn.ReadJSON(&msg); err != nil {
-			fmt.Println("error reading json", err)
-			if websocket.IsUnexpectedCloseError(err,
-				websocket.CloseGoingAway,
-				websocket.CloseAbnormalClosure) {
-				log.Printf("error: %v", err)
-			}
-			break
-		}
-		msg.From = c.userID
-		msg.SocketID = c.socketID
-		msg.Timestamp = time.Now()
-		fmt.Println("got msg:", msg)
-		c.hub.broadcast <- msg
-	}
-}
-
-func (c *Client) writePump() {
+func (c *Client) writePump(ctx context.Context) error {
+	log.Println("write pump")
 	ticker := time.NewTicker(pingPeriod)
-	defer func() {
-		ticker.Stop()
-		c.conn.Close()
-		log.Println("write pump closed")
-	}()
+	defer ticker.Stop()
+
 	for {
 		select {
+		case <-ctx.Done():
+			return nil
 		case msg, ok := <-c.send:
 			fmt.Println("received message", msg)
-			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			c.conn.SetWriteDeadline(writeDeadline())
 			if !ok {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
+				return errors.New("send channel closed")
 			}
 			if err := c.conn.WriteJSON(msg); err != nil {
-				log.Println("write json failed:", err)
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
+				return errors.Wrap(err, "write message failed")
 			}
 		case <-ticker.C:
 			log.Println("writing ping")
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Println("write message failed", err)
-				return
+				return errors.Wrap(err, "write ping failed")
 			}
 		}
 	}
-
 }

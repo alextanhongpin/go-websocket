@@ -1,12 +1,10 @@
 package socket
 
 import (
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/rs/xid"
 )
 
 // User is already logged in.
@@ -31,33 +29,16 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-type SocketID string
-
-func NewSocketID() SocketID {
-	return SocketID(xid.New().String())
+func handleUnexpectedClose(err error) bool {
+	return websocket.IsUnexpectedCloseError(err,
+		websocket.CloseGoingAway,
+		websocket.CloseAbnormalClosure)
 }
 
-func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-	// Extract as middleware.
-	// token := r.URL.Query().Get("token")
-	// Validates the token string.
-	// _ = token
-	// MessageType: TextMessage, BinaryMessage, CloseMessage, PingMessage, PongMessage
-	if err := conn.WriteMessage(
-		websocket.CloseMessage,
-		websocket.FormatCloseMessage(websocket.CloseProtocolError, "unauthorized attempt"),
-	); err != nil {
-		log.Fatal(err)
-		return
-	}
-	client := NewClient("1", hub, conn)
-	log.Println("registering client")
-	client.hub.register <- client
-	go client.writePump()
-	go client.readPump()
+func readDeadline() time.Time {
+	return time.Now().Add(pongWait)
+}
+
+func writeDeadline() time.Time {
+	return time.Now().Add(writeWait)
 }
