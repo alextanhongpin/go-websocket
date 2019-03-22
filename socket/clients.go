@@ -30,18 +30,13 @@ func (c *Clients) WithUserID(userID UserID) ([]*Client, bool) {
 	return result, exist
 }
 
-func (c *Clients) Add(client *Client) func() {
+func (c *Clients) Add(client *Client) {
 	c.Lock()
 	if _, exist := c.value[client.userID]; !exist {
 		c.value[client.userID] = make(map[*Client]struct{})
 	}
 	c.value[client.userID][client] = struct{}{}
 	c.Unlock()
-	log.Println("added")
-	undo := func() {
-		c.Remove(client)
-	}
-	return undo
 }
 
 func (c *Clients) Remove(client *Client) {
@@ -55,6 +50,7 @@ func (c *Clients) Remove(client *Client) {
 		if len(clients) == 0 {
 			delete(c.value, client.userID)
 		}
+		close(client.send)
 	}
 	c.Unlock()
 }

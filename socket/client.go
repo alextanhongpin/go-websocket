@@ -1,13 +1,9 @@
 package socket
 
 import (
-	"context"
-	"fmt"
-	"log"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/pkg/errors"
 )
 
 type Client struct {
@@ -39,31 +35,26 @@ func NewClient(id string, conn *websocket.Conn) *Client {
 	}
 }
 
-func (c *Client) writePump(ctx context.Context) error {
-	log.Println("write pump")
+func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
-			return nil
 		case msg, ok := <-c.send:
-			fmt.Println("received message", msg)
 			c.conn.SetWriteDeadline(writeDeadline())
 			if !ok {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return errors.New("send channel closed")
+				return
 			}
 			if err := c.conn.WriteJSON(msg); err != nil {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return errors.Wrap(err, "write message failed")
+				return
 			}
 		case <-ticker.C:
-			log.Println("writing ping")
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return errors.Wrap(err, "write ping failed")
+				return
 			}
 		}
 	}

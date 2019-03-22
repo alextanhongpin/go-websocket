@@ -11,16 +11,16 @@ import (
 type Hub struct {
 	sync.WaitGroup
 	// Registered clients.
-	clients *Clients
-
-	quit chan struct{}
-
+	clients   *Clients
 	broadcast chan Message
+	// TODO: store userID:connID=hostID in redis, map connID to *websocket.Conn.
+	// Register redis publish subscribe to existing hostID.
+	// When there's a new message, publish it to the userID
+	// Distinguish between distribute events and local (e.g. ping is local to the current connection only)
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		quit:      make(chan struct{}),
 		clients:   NewClients(),
 		broadcast: make(chan Message),
 	}
@@ -29,14 +29,9 @@ func NewHub() *Hub {
 func (h *Hub) Start() func(context.Context) {
 	h.Add(1)
 	go func() {
-		defer func() {
-			close(h.broadcast)
-			h.Done()
-		}()
+		defer h.Done()
 		for {
 			select {
-			case <-h.quit:
-				return
 			case msg, ok := <-h.broadcast:
 				// Decide on which client to send the message
 				// to.
@@ -54,7 +49,7 @@ func (h *Hub) Start() func(context.Context) {
 	return func(ctx context.Context) {
 		done := make(chan struct{})
 		go func() {
-			close(h.quit)
+			close(h.broadcast)
 			h.Wait()
 			close(done)
 		}()
@@ -88,18 +83,14 @@ func (h *Hub) ServeWs(w http.ResponseWriter, r *http.Request) {
 	//         return
 	// }
 	client := NewClient("1", conn)
-	undo := h.clients.Add(client)
-	defer undo()
+	h.clients.Add(client)
 
-	ctx := r.Context()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
 
 	go func() {
-		err := client.writePump(ctx)
-		if err != nil {
-			log.Println(err)
-		}
+		defer wg.Done()
+		client.writePump()
 	}()
 
 	conn.SetReadLimit(maxMessageSize)
@@ -127,4 +118,7 @@ func (h *Hub) ServeWs(w http.ResponseWriter, r *http.Request) {
 			h.broadcast <- msg
 		}
 	}
+	h.clients.Remove(client)
+	wg.Wait()
+	log.Println("shutting down serverws")
 }
