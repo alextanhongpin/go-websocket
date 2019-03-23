@@ -1,6 +1,7 @@
 package socket
 
 import (
+	"log"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -56,6 +57,34 @@ func (c *Client) writePump() {
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
+		}
+	}
+}
+
+func (c *Client) readPump(broadcast chan<- Message) {
+	c.conn.SetReadLimit(maxMessageSize)
+	c.conn.SetReadDeadline(readDeadline())
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(readDeadline())
+		return nil
+	})
+	for {
+		var msg Message
+		if err := c.conn.ReadJSON(&msg); err != nil {
+			if handleUnexpectedClose(err) {
+				log.Printf("error: %v", err)
+			}
+			break
+		}
+		msg.From = c.userID
+		msg.ConnID = c.connID
+		msg.Timestamp = time.Now()
+		switch msg.Type {
+		// Only ping to individual connection.
+		case PingMessageType:
+			_ = c.SendMessage(msg)
+		default:
+			broadcast <- msg
 		}
 	}
 }

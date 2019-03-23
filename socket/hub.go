@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"sync"
-	"time"
 )
 
 type Hub struct {
@@ -87,37 +86,11 @@ func (h *Hub) ServeWs(w http.ResponseWriter, r *http.Request) {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-
 	go func() {
 		defer wg.Done()
 		client.writePump()
 	}()
-
-	conn.SetReadLimit(maxMessageSize)
-	conn.SetReadDeadline(readDeadline())
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(readDeadline())
-		return nil
-	})
-	for {
-		var msg Message
-		if err := conn.ReadJSON(&msg); err != nil {
-			if handleUnexpectedClose(err) {
-				log.Printf("error: %v", err)
-			}
-			break
-		}
-		msg.From = client.userID
-		msg.ConnID = client.connID
-		msg.Timestamp = time.Now()
-		switch msg.Type {
-		// Only ping to individual connection.
-		case PingMessageType:
-			_ = client.SendMessage(msg)
-		default:
-			h.broadcast <- msg
-		}
-	}
+	client.readPump(h.broadcast)
 	h.clients.Remove(client)
 	wg.Wait()
 	log.Println("shutting down serverws")
