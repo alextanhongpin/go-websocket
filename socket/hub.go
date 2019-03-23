@@ -5,12 +5,15 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 )
 
 type Hub struct {
-	sync.WaitGroup
 	// Registered clients.
-	clients   *Clients
+	clients *Clients
+
+	wg        sync.WaitGroup
+	once      sync.Once
 	broadcast chan Message
 	// TODO: store userID:connID=hostID in redis, map connID to *websocket.Conn.
 	// Register redis publish subscribe to existing hostID.
@@ -25,10 +28,17 @@ func NewHub() *Hub {
 	}
 }
 
+func (h *Hub) close() {
+	h.once.Do(func() {
+		close(h.broadcast)
+	})
+	h.wg.Wait()
+}
+
 func (h *Hub) Start() func(context.Context) {
-	h.Add(1)
+	h.wg.Add(1)
 	go func() {
-		defer h.Done()
+		defer h.wg.Done()
 		for {
 			select {
 			case msg, ok := <-h.broadcast:
@@ -48,8 +58,7 @@ func (h *Hub) Start() func(context.Context) {
 	return func(ctx context.Context) {
 		done := make(chan struct{})
 		go func() {
-			close(h.broadcast)
-			h.Wait()
+			h.close()
 			close(done)
 		}()
 		select {
@@ -83,15 +92,22 @@ func (h *Hub) ServeWs(w http.ResponseWriter, r *http.Request) {
 	// }
 	client := NewClient("1", conn)
 	h.clients.Add(client)
+	log.Println("added client", client.connID, client.userID)
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		client.writePump()
-	}()
+	shutdown := client.writePump()
+	// Blocking.
 	client.readPump(h.broadcast)
+
+	// No more reads, remove the client first before shutting down the send
+	// channel to avoid sending to closed channel.
 	h.clients.Remove(client)
-	wg.Wait()
-	log.Println("shutting down serverws")
+	log.Println("removed client", client.connID, client.userID)
+
+	// Shutdown within 5 seconds, else cancel.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// Perform shutdown with cancellation.
+	shutdown(ctx)
+	log.Println("shutdown serveWs")
 }

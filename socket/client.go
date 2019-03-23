@@ -1,7 +1,9 @@
 package socket
 
 import (
+	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -11,10 +13,19 @@ type Client struct {
 	connID    ConnID
 	userID    UserID
 	conn      *websocket.Conn
-	send      chan Message
 	createdAt time.Time
 	// List of peers that can communicate with the user.
 	// allowed []UserID
+	once sync.Once
+	wg   sync.WaitGroup
+	send chan Message
+}
+
+func (c *Client) close() {
+	c.once.Do(func() {
+		close(c.send)
+	})
+	c.wg.Wait()
 }
 
 func (c *Client) SendMessage(msg Message) bool {
@@ -36,27 +47,48 @@ func NewClient(id string, conn *websocket.Conn) *Client {
 	}
 }
 
-func (c *Client) writePump() {
-	ticker := time.NewTicker(pingPeriod)
-	defer ticker.Stop()
+func (c *Client) writePump() func(context.Context) {
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		// This must be inside the goroutine, not outside!
+		ticker := time.NewTicker(pingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case msg, ok := <-c.send:
+				log.Println("sending msg", msg)
+				c.conn.SetWriteDeadline(writeDeadline())
+				if !ok {
+					c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+					return
+				}
+				if err := c.conn.WriteJSON(msg); err != nil {
+					c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+					return
+				}
+			case <-ticker.C:
+				c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return
+				}
+			}
+		}
+	}()
 
-	for {
+	return func(ctx context.Context) {
+		done := make(chan interface{})
+		go func() {
+			c.close()
+			close(done)
+		}()
 		select {
-		case msg, ok := <-c.send:
-			c.conn.SetWriteDeadline(writeDeadline())
-			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-			if err := c.conn.WriteJSON(msg); err != nil {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return
-			}
+		case <-ctx.Done():
+			log.Println("cancel write pump after timeout")
+			return
+		case <-done:
+			log.Println("shutdown write pump gracefully")
+			return
 		}
 	}
 }

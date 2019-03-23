@@ -17,7 +17,8 @@ const (
 
 // Message is passed between websockets.
 type Message struct {
-	ID        string
+	// A unique message id.
+	id        string
 	Data      map[string]interface{} `json:"data"`
 	From      UserID                 `json:"from"`
 	ConnID    ConnID                 `json:"-"`

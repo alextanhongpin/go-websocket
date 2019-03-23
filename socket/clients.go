@@ -50,7 +50,6 @@ func (c *Clients) Remove(client *Client) {
 		if len(clients) == 0 {
 			delete(c.value, client.userID)
 		}
-		close(client.send)
 	}
 	c.Unlock()
 }
